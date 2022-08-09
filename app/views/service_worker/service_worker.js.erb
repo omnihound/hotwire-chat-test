@@ -1,0 +1,102 @@
+var CACHE_VERSION = 'v1';
+var CACHE_NAME = CACHE_VERSION + ':sw-cache-';
+self.importScripts('/localforage-1.10.0.min.js');
+function onInstall(event) {
+  console.log('[Serviceworker]', "Installing!", event);
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(function prefill(cache) {
+      return cache.addAll([
+        '<%= asset_path 'application.css' %>'
+      ]);
+    })
+  );
+}
+
+function onActivate(event) {
+  console.log('[Serviceworker]', "Activating!", event);
+  event.waitUntil(
+    caches.keys().then(function(cacheNames) {
+      return Promise.all(
+        cacheNames.filter(function(cacheName) {
+          // Return true if you want to remove this cache,
+          // but remember that caches are shared across
+          // the whole origin
+          return cacheName.indexOf(CACHE_VERSION) !== 0;
+        }).map(function(cacheName) {
+          return caches.delete(cacheName);
+        })
+      );
+    })
+  );
+}
+
+function paramsToObj(params) {
+  const obj = {};
+  params.forEach((v, k) => {
+    obj[k] = v;
+  });
+
+  return obj
+}
+
+async function onFetch(event) {
+  console.log(event);
+  if (event.request.method === 'POST') {
+    try {
+      if (!navigator.onLine) {
+        const formData = await event.request.text();
+        const params = new URLSearchParams(formData);
+        const paramsObj = {};
+        params.forEach((v, k) => paramsObj[k] = v)
+
+        syncMessagesLater({...paramsObj, url: event.request.url});
+      }
+      
+    } catch (ex) {
+      console.log(ex);
+    }
+  }
+}
+
+async function syncMessagesLater(params) {
+  try {
+    const time = Date.now()
+    await self.registration.sync.register(`sync-messages-${time}`);
+    await localforage.setItem(`sync-messages-${time}`, params)
+  } catch(ex) {
+    console.log('Background Sync could not be registered!', ex);
+  }
+}
+
+// Example POST method implementation:
+async function postData(url = '', data = {}) {
+  // Default options are marked with *
+  const response = await fetch(url, {
+    method: 'POST', // *GET, POST, PUT, DELETE, etc.
+    mode: 'cors', // no-cors, *cors, same-origin
+    cache: 'no-cache', // *default, no-cache, reload, force-cache, only-if-cached
+    credentials: 'same-origin', // include, *same-origin, omit
+    headers: {
+      'Content-Type': 'application/json'
+      // 'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    redirect: 'follow', // manual, *follow, error
+    referrerPolicy: 'no-referrer', // no-referrer, *no-referrer-when-downgrade, origin, origin-when-cross-origin, same-origin, strict-origin, strict-origin-when-cross-origin, unsafe-url
+    body: JSON.stringify(data) // body data type must match "Content-Type" header
+  });
+
+  if (response.status === 204) {
+    console.log(response);
+    return {};
+  }
+  return response.json(); // parses JSON response into native JavaScript objects
+}
+
+self.addEventListener('install', onInstall);
+self.addEventListener('activate', onActivate);
+self.addEventListener('fetch', onFetch);
+self.addEventListener('sync', async (event) => {
+  const cached = await localforage.getItem(event.tag);
+  await postData(cached.url, { authenticity_token: cached.authenticity_token, commit: cached.commit, message: { content: cached["message[content]"] } });
+  await fetch('/rooms/1/messages_refresh');
+})
